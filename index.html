@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Backfill QaQc Tracker</title>
+<style>
+:root{--bg:#f4f6f9;--card:#fff;--ink:#1f2937;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
+header{background:#111827;color:#fff;padding:14px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+header h1{font-size:18px;margin:0;flex:1}
+.btn{border:0;border-radius:6px;padding:8px 12px;cursor:pointer;font-size:13px;background:var(--accent);color:#fff}
+.btn.secondary{background:#e5e7eb;color:#111}
+.btn:disabled{opacity:.5;cursor:default}
+main{padding:18px 20px;max-width:1500px;margin:auto}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:var(--card);border-radius:10px;padding:12px 14px;border-left:5px solid var(--accent);box-shadow:0 1px 2px rgba(0,0,0,.05);cursor:pointer}
+.kpi .n{font-size:24px;font-weight:700}
+.kpi .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+.filters{background:var(--card);padding:12px;border-radius:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.filters input[type=text],.filters input:not([type]),.filters select{padding:7px 9px;border:1px solid #d1d5db;border-radius:6px;font-size:13px}
+.table-wrap{background:var(--card);border-radius:10px;overflow:auto;box-shadow:0 1px 2px rgba(0,0,0,.05);max-height:70vh}
+table{border-collapse:collapse;width:100%;min-width:1200px}
+th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{position:sticky;top:0;background:#f9fafb;z-index:1;font-size:12px;color:#374151}
+tr:hover td{background:#f8fafc}
+tr.overdue td{background:#fef2f2}
+tr.soon td{background:#fffbeb}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;color:#fff;background:#334155}
+.s-completed{background:#16a34a}.s-curing{background:#0ea5e9}.s-in-celab{background:#8b5cf6}
+.s-ready-to-test{background:#f59e0b}.s-damaged{background:#dc2626}.s-scheduled{background:#64748b}.s-none{background:#9ca3af}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:20px;z-index:10}
+.modal-bg.open{display:flex}
+.modal{background:#fff;border-radius:12px;padding:18px;width:min(1000px,100%);max-height:92vh;overflow:auto}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+.fld{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#374151}
+.fld input,.fld select,.fld textarea{padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;font-family:inherit}
+.actions{margin-top:14px;display:flex;justify-content:flex-end;gap:8px}
+#toast{position:fixed;bottom:20px;right:20px;background:#111827;color:#fff;padding:10px 14px;border-radius:8px;display:none;max-width:420px;z-index:20}
+</style>
+</head>
+<body>
+<header>
+  <h1>Backfill QaQc Tracker</h1>
+  <span id="syncInfo" style="font-size:12px;opacity:.85"></span>
+  <button class="btn secondary" onclick="resetToken()">Token</button>
+  <button class="btn secondary" onclick="loadData()">Refresh</button>
+  <button class="btn secondary" onclick="exportCsv()">Export CSV</button>
+  <button class="btn" onclick="openForm(null)">+ Add element</button>
+</header>
+<main>
+  <div class="kpis" id="kpis"></div>
+  <div class="filters">
+    <input type="text" id="q" placeholder="Search (Sample_ID, batch, comments...)" oninput="render()" style="min-width:280px">
+    <select id="fStatus" onchange="render()"><option value="">All statuses</option></select>
+    <select id="fMat" onchange="render()"><option value="">All materials</option></select>
+    <select id="fStope" onchange="render()"><option value="">All stope levels</option></select>
+    <label><input type="checkbox" id="fOver" onchange="render()"> Overdue only</label>
+    <span id="count" style="color:#6b7280;margin-left:auto"></span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr id="thead"></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<div class="modal-bg" id="modal" onclick="if(event.target===this)closeForm()">
+  <div class="modal">
+    <h2 id="mTitle" style="margin-top:0">Add element</h2>
+    <form id="frm" onsubmit="saveForm(event)">
+      <div class="grid" id="formGrid"></div>
+      <div class="actions">
+        <button type="button" class="btn secondary" onclick="closeForm()">Cancel</button>
+        <button type="submit" class="btn" id="saveBtn">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+/* ===== CONFIG: paste your Apps Script Web App URL here ===== */
+const CONFIG = {
+  API_URL: 'https://script.google.com/macros/s/AKfycbwuniHXT2iHktBXF_G4Ua0JeJawwkIlODDavrfuiQJnGpbx9OZM_nPVqiorrY3Lx9wqgg/exec'
+};
+
+const STATUSES = ['Scheduled','Curing','Ready to Test','In Celab','Completed','Damaged'];
+const MATERIALS = ['CRF','CAF','SCBS','CS'];
+const TABLE_COLS = ['Sample_ID','Batch_ID','Stope_ID','Sample No','TYPE_Material','Status','Curing time',
+  'Date of making samples','Planed testing date','Actual testing date','Target UCS (Mpa)','UCS (Mpa)','Comments'];
+
+/* Keys must match the header names in the Google Sheet exactly */
+const FIELDS = [
+  {key:'Batch_ID',label:'Batch ID',type:'number'},
+  {key:'Date of making samples',label:'Date of making samples',type:'date'},
+  {key:'Stope level',label:'Stope level',type:'text'},
+  {key:'XCT',label:'XCT',type:'text'},
+  {key:'PRI/SEC',label:'PRI/SEC',type:'text'},
+  {key:'Backfill Plan ID',label:'Backfill Plan ID',type:'text'},
+  {key:'Stope_ID',label:'Stope ID',type:'text'},
+  {key:'Sample No',label:'Sample No',type:'text'},
+  {key:'Sample_ID',label:'Sample ID',type:'text'},
+  {key:'Status',label:'Status',type:'select',options:STATUSES},
+  {key:'TYPE_Material',label:'Material type',type:'select',options:MATERIALS},
+  {key:'Target UCS (Mpa)',label:'Target UCS (MPa)',type:'number'},
+  {key:'Curing time',label:'Curing time (days)',type:'number'},
+  {key:'Planed testing date',label:'Planned testing date',type:'date'},
+  {key:'Actual testing date',label:'Actual testing date',type:'date'},
+  {key:'Sample wight (kg)',label:'Sample weight (kg)',type:'number'},
+  {key:'Volume (m³)',label:'Volume (m³)',type:'number'},
+  {key:'Density (kg/m³)',label:'Density (kg/m³)',type:'number'},
+  {key:'Breaking force (kN)',label:'Breaking force (kN)',type:'number'},
+  {key:'Area (mm²)',label:'Area (mm²)',type:'number'},
+  {key:'UCS (Mpa)',label:'UCS (MPa)',type:'number'},
+  {key:'Cement (kg)',label:'Cement (kg)',type:'number'},
+  {key:'Water (l)',label:'Water (l)',type:'number'},
+  {key:'Waste (kg)/Ag4-8',label:'Waste (kg)/Ag4-8',type:'number'},
+  {key:'Aggregate (kg)',label:'Aggregate (kg)',type:'number'},
+  {key:'Cement content (%)',label:'Cement content (%)',type:'number'},
+  {key:'W/C ratio',label:'W/C ratio',type:'number'},
+  {key:'Humidity (%)',label:'Humidity (%)',type:'number'},
+  {key:'Curing_temperature',label:'Curing temperature',type:'number'},
+  {key:'Company',label:'Company',type:'text'},
+  {key:'UG Name',label:'UG name',type:'text'},
+  {key:'Sample Dimension (mm)',label:'Sample dimension (mm)',type:'text'},
+  {key:'Comments',label:'Comments',type:'textarea'}
+];
+
+let rows = [];
+let headers = [];
+let editRow = null;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const dateStr = d => d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+const todayStr = () => dateStr(new Date());
+const plusDays = n => { const d = new Date(); d.setDate(d.getDate() + n); return dateStr(d); };
+
+function toast(msg){
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(t._t);
+  t._t = setTimeout(() => t.style.display = 'none', 3500);
+}
+
+function getToken(){
+  let t = localStorage.getItem('qaqc_token');
+  if(!t){
+    t = prompt('Enter access token (ask the admin):');
+    if(t) localStorage.setItem('qaqc_token', t.trim());
+  }
+  return t || '';
+}
+function resetToken(){ localStorage.removeItem('qaqc_token'); loadData(); }
+
+async function apiGet(){
+  const url = new URL(CONFIG.API_URL);
+  url.searchParams.set('action','list');
+  url.searchParams.set('token', getToken());
+  const r = await fetch(url.toString());
+  return r.json();
+}
+async function apiPost(payload){
+  const r = await fetch(CONFIG.API_URL, {
+    method:'POST',
+    headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body: JSON.stringify({...payload, token: getToken()})
+  });
+  return r.json();
+}
+
+async function loadData(){
+  if(CONFIG.API_URL.startsWith('PASTE')){
+    $('syncInfo').textContent = 'Not connected - set API_URL in index.html';
+    toast('Set CONFIG.API_URL first (see setup guide).');
+    return;
+  }
+  $('syncInfo').textContent = 'Loading...';
+  try{
+    const d = await apiGet();
+    if(!d.ok){
+      if(d.error === 'Unauthorized') localStorage.removeItem('qaqc_token');
+      throw new Error(d.error);
+    }
+    rows = d.rows;
+    headers = d.headers;
+    $('syncInfo').textContent = 'Connected - last sync ' + new Date().toLocaleTimeString();
+    buildFilters();
+    render();
+  }catch(e){
+    $('syncInfo').textContent = 'Error';
+    toast('Load failed: ' + e.message);
+  }
+}
+
+function uniq(key){
+  return [...new Set(rows.map(r => String(r[key] ?? '').trim()).filter(Boolean))].sort();
+}
+function fill(sel, vals, label){
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">${label}</option>` + vals.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  sel.value = vals.includes(cur) ? cur : '';
+}
+function buildFilters(){
+  fill($('fStatus'), uniq('Status'), 'All statuses');
+  fill($('fMat'), uniq('TYPE_Material'), 'All materials');
+  fill($('fStope'), uniq('Stope level'), 'All stope levels');
+}
+
+function isDone(r){ return String(r['Status'] || '') === 'Completed'; }
+function isOverdue(r){
+  const p = r['Planed testing date'];
+  return !!p && !r['Actual testing date'] && !isDone(r) && String(p) < todayStr();
+}
+function isDueSoon(r){
+  const p = String(r['Planed testing date'] || '');
+  if(!p || r['Actual testing date'] || isDone(r)) return false;
+  return p >= todayStr() && p <= plusDays(3);
+}
+function statusClass(s){ return 's-' + (String(s || 'none').toLowerCase().replace(/[^a-z]+/g,'-').replace(/^-|-$/g,'') || 'none'); }
+
+function filtered(){
+  const q = $('q').value.trim().toLowerCase();
+  const st = $('fStatus').value, mt = $('fMat').value, sp = $('fStope').value, ov = $('fOver').checked;
+  return rows.filter(r => {
+    if(st && String(r['Status'] ?? '') !== st) return false;
+    if(mt && String(r['TYPE_Material'] ?? '') !== mt) return false;
+    if(sp && String(r['Stope level'] ?? '') !== sp) return false;
+    if(ov && !isOverdue(r)) return false;
+    if(q && !Object.values(r).some(v => String(v ?? '').toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function setStatus(s){ $('fStatus').value = s; $('fOver').checked = false; render(); }
+function setOverdue(){ $('fStatus').value = ''; $('fOver').checked = true; render(); }
+function resetFilters(){ $('fStatus').value=''; $('fMat').value=''; $('fStope').value=''; $('fOver').checked=false; $('q').value=''; render(); }
+
+function render(){
+  const cnt = fn => rows.filter(fn).length;
+  const kpis = [
+    {l:'Total', n:rows.length, click:'resetFilters()'},
+    {l:'Curing', n:cnt(r => r.Status === 'Curing'), click:"setStatus('Curing')"},
+    {l:'Ready / In Celab', n:cnt(r => ['Ready to Test','In Celab'].includes(r.Status))},
+    {l:'Completed', n:cnt(r => r.Status === 'Completed'), click:"setStatus('Completed')"},
+    {l:'Damaged', n:cnt(r => r.Status === 'Damaged'), click:"setStatus('Damaged')"},
+    {l:'Overdue', n:cnt(isOverdue), click:'setOverdue()'},
+    {l:'Due in 3 days', n:cnt(isDueSoon)}
+  ];
+  $('kpis').innerHTML = kpis.map(k =>
+    `<div class="kpi"${k.click ? ` onclick="${k.click}"` : ''}><div class="n">${k.n}</div><div class="l">${esc(k.l)}</div></div>`
+  ).join('');
+
+  const list = filtered();
+  $('count').textContent = list.length + ' of ' + rows.length + ' rows';
+  $('thead').innerHTML = TABLE_COLS.map(c => `<th>${esc(c)}</th>`).join('') + '<th>Quick status</th><th></th>';
+
+  const body = list.map(r => {
+    const cls = isOverdue(r) ? 'overdue' : (isDueSoon(r) ? 'soon' : '');
+    const cells = TABLE_COLS.map(c => {
+      if(c === 'Status') return `<td><span class="badge ${statusClass(r.Status)}">${esc(r.Status || '-')}</span></td>`;
+      return `<td>${esc(r[c] ?? '')}</td>`;
+    }).join('');
+    const quick = `<td><select onchange="quickStatus(${r._row}, this.value)"><option value="">Change...</option>${STATUSES.map(s => `<option value="${s}">${s}</option>`).join('')}</select></td>`;
+    return `<tr class="${cls}">${cells}${quick}<td><button class="btn secondary" onclick="openForm(${r._row})">Edit</button></td></tr>`;
+  }).join('');
+  $('tbody').innerHTML = body || `<tr><td colspan="${TABLE_COLS.length + 2}" style="text-align:center;padding:30px;color:#6b7280">No rows</td></tr>`;
+}
+
+async function quickStatus(rowIndex, val){
+  if(!val) return;
+  try{ await sendUpdate(rowIndex, {Status: val}); }
+  catch(e){ toast('Save failed: ' + e.message); loadData(); }
+}
+
+async function sendUpdate(rowIndex, data){
+  $('syncInfo').textContent = 'Saving...';
+  const d = await apiPost({action:'update', rowIndex, data});
+  if(!d.ok) throw new Error(d.error);
+  toast('Saved');
+  await loadData();
+}
+async function sendAdd(data){
+  $('syncInfo').textContent = 'Saving...';
+  const d = await apiPost({action:'add', data});
+  if(!d.ok) throw new Error(d.error);
+  toast('Element added');
+  await loadData();
+}
+
+function openForm(rowId){
+  editRow = rowId;
+  const base = rowId ? (rows.find(r => r._row === rowId) || {}) : {};
+  $('mTitle').textContent = rowId ? ('Edit element (sheet row ' + rowId + ')') : 'Add new element';
+  buildForm(base);
+  $('modal').classList.add('open');
+}
+function closeForm(){ $('modal').classList.remove('open'); }
+
+function buildForm(v){
+  $('formGrid').innerHTML = FIELDS.map(f => {
+    const val = v[f.key] ?? '';
+    let input;
+    if(f.type === 'select'){
+      let opts = [...f.options];
+      if(val !== '' && !opts.includes(String(val))) opts.push(String(val));
+      input = `<select data-key="${esc(f.key)}"><option value=""></option>` +
+        opts.map(o => `<option value="${esc(o)}" ${String(val) === o ? 'selected' : ''}>${esc(o)}</option>`).join('') + '</select>';
+    } else if(f.type === 'textarea'){
+      input = `<textarea data-key="${esc(f.key)}" rows="2">${esc(val)}</textarea>`;
+    } else {
+      input = `<input data-key="${esc(f.key)}" type="${f.type}" ${f.type === 'number' ? 'step="any"' : ''} value="${esc(val)}">`;
+    }
+    return `<label class="fld"><span>${esc(f.label)}</span>${input}</label>`;
+  }).join('');
+}
+
+async function saveForm(e){
+  e.preventDefault();
+  const data = {};
+  document.querySelectorAll('#formGrid [data-key]').forEach(el => {
+    const f = FIELDS.find(x => x.key === el.dataset.key);
+    let v = el.value;
+    if(f.type === 'number') v = (v === '') ? '' : Number(v);
+    data[f.key] = v;
+  });
+  if(!String(data['Sample_ID'] ?? '').trim()){ toast('Sample ID is required'); return; }
+
+  $('saveBtn').disabled = true;
+  try{
+    if(editRow){
+      const orig = rows.find(r => r._row === editRow) || {};
+      const changed = {};
+      Object.keys(data).forEach(k => {
+        if(String(data[k] ?? '') !== String(orig[k] ?? '')) changed[k] = data[k];
+      });
+      if(!Object.keys(changed).length){ toast('No changes'); closeForm(); return; }
+      await sendUpdate(editRow, changed);
+    } else {
+      if(rows.some(r => String(r.Sample_ID ?? '') === String(data.Sample_ID))){
+        if(!confirm('Sample ID already exists. Add anyway?')) return;
+      }
+      await sendAdd(data);
+    }
+    closeForm();
+  }catch(err){
+    toast('Save failed: ' + err.message);
+  }finally{
+    $('saveBtn').disabled = false;
+  }
+}
+
+function exportCsv(){
+  const cols = headers.filter(h => h);
+  const q = v => { const s = String(v ?? ''); return /[",\n;]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s; };
+  const lines = [cols.map(q).join(',')].concat(filtered().map(r => cols.map(c => q(r[c])).join(',')));
+  const blob = new Blob(['\ufeff' + lines.join('\n')], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'qaqc_export_' + todayStr() + '.csv';
+  a.click();
+}
+
+document.addEventListener('keydown', e => { if(e.key === 'Escape') closeForm(); });
+render();
+loadData();
+</script>
+</body>
+</html>
